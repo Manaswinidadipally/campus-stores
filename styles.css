@@ -163,6 +163,21 @@ body > main {
   color: var(--memotxt);
   flex-shrink: 0;
 }
+#campus-stores .stillout {
+  background: var(--desk);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 19px;
+  font-size: 13px;
+}
+#campus-stores .stillout ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+#campus-stores .stillout .tag {
+  background: var(--memo);
+  color: var(--memotxt);
+  font-weight: 600;
+}
 #campus-stores button,
 #campus-stores select,
 #campus-stores input,

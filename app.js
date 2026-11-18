@@ -89,10 +89,15 @@
     ["Loan register", "book-open"],
     ["Desk book", "messages-square"],
   ];
+  // Desk clock in hours from Friday 00:00, one entry per shift phase, and the
+  // same scale for each "Return by" choice. Used only to flag overdue slips.
+  const clockAt = [15.75, 19.5, 33];
+  const dueAt = { "Fri 8 pm": 20, "Sat 9 am": 33, "Sat 10 am": 34, "Sat noon": 36 };
   const original = () => ({
     version: 1,
     tab: "Requests",
     phase: 0,
+    returning: null,
     selected: "",
     filter: "All items",
     loans: [
@@ -101,6 +106,7 @@
         req: "RQ-209",
         asset: "MI-09",
         who: "Tara Shah",
+        holder: "Tara Shah",
         due: "Sat 10 am",
         back: false,
       },
@@ -114,6 +120,23 @@
   const getAsset = (id) => assets.find((x) => x.id === id);
   const getReq = (id) => requests.find((x) => x.id === id);
   const out = (id) => s.loans.find((l) => l.asset === id && !l.back);
+  const isOverdue = (l) => !l.back && clockAt[s.phase] > dueAt[l.due];
+  const log = (text) => s.notes.push({ phase: s.phase, text, auto: true });
+  // Holder shown when nobody has confirmed where a unit is.
+  const UNKNOWN = "Unknown";
+  const holderOpts = (sel) =>
+    [...people, UNKNOWN]
+      .map(
+        (p) =>
+          '<option value="' +
+          esc(p) +
+          '"' +
+          (p === sel ? " selected" : "") +
+          ">" +
+          esc(p) +
+          "</option>",
+      )
+      .join("");
   const esc = (x) =>
     String(x).replace(
       /[&<>"']/g,
@@ -178,7 +201,23 @@
         "</p><p><b>Return by</b> " +
         r.due +
         "</p><p><b>Approved equipment</b></p><ul>" +
-        r.items.map((x) => "<li>" + x + "</li>").join("") +
+        r.items
+          .map((x) => {
+            const ls = s.loans.filter(
+              (l) => l.req === r.id && getAsset(l.asset).type === x,
+            );
+            const st = ls.length
+              ? ls
+                  .map((l) =>
+                    l.back
+                      ? l.asset + " returned"
+                      : l.asset + " with " + l.holder,
+                  )
+                  .join("; ")
+              : "not issued yet";
+            return "<li>" + x + " <small>· " + esc(st) + "</small></li>";
+          })
+          .join("") +
         "</ul><p>" +
         r.note +
         "</p></div>";
@@ -284,14 +323,92 @@
       .slice()
       .reverse();
     if (!shown.length) html += "<p>No outstanding slips.</p>";
-    for (const l of shown)
+    for (const l of shown) {
+      const unit = getAsset(l.asset);
+      const holderSelect =
+        '<select data-holder="' +
+        l.num +
+        '" aria-label="Now with, slip L-' +
+        l.num +
+        '">' +
+        holderOpts(l.holder) +
+        "</select>";
       html += row(
-        "L-" + l.num + " · " + l.asset,
-        l.req + " · " + l.who + " · Due " + l.due,
+        "L-" + l.num + " · " + l.asset + " · " + unit.type,
+        l.req +
+          " · " +
+          unit.model +
+          " · Collected by " +
+          l.who +
+          (l.back ? "" : " · Now with " + l.holder) +
+          " · Due " +
+          l.due +
+          (isOverdue(l) ? " · OVERDUE" : ""),
         l.back
           ? badge("Returned")
-          : btn("Record return", "return", String(l.num)),
+          : s.returning === l.num
+            ? ""
+            : '<div class="buttons">' +
+              holderSelect +
+              btn("Record return", "return", String(l.num)) +
+              "</div>",
       );
+      if (!l.back && s.returning === l.num) {
+        const cands = assets.filter(
+          (a) =>
+            a.type === unit.type && !a.repair && (a.id === l.asset || !out(a.id)),
+        );
+        const rest = s.loans.filter(
+          (x) => x.req === l.req && !x.back && x.num !== l.num,
+        );
+        html +=
+          '<form data-return="' +
+          l.num +
+          '" class="record"><strong>Record return for L-' +
+          l.num +
+          "</strong><small> · Check the label on the unit in your hand</small>" +
+          '<div class="form"><label><span>Unit handed back</span><select name="unit" required>' +
+          (cands.length > 1 ? '<option value="">Select…</option>' : "") +
+          cands
+            .map(
+              (a) =>
+                '<option value="' +
+                a.id +
+                '">' +
+                esc(a.id + " · " + a.model + " · bin " + a.bin) +
+                "</option>",
+            )
+            .join("") +
+          '</select></label><label><span>Brought back by</span><select name="by"' +
+          // If nobody is confirmed as holding the unit, make the desk choose
+          // rather than defaulting to the first name in the list.
+          (people.includes(l.holder) ? ">" : ' required><option value="">Select…</option>') +
+          holderOpts(people.includes(l.holder) ? l.holder : "") +
+          "</select></label></div>" +
+          (rest.length
+            ? "<p><small>Still out on " +
+              l.req +
+              ": who has these now? Anything the returner held is set to Unknown until confirmed.</small></p>" +
+              '<div class="form">' +
+              rest
+                .map(
+                  (x) =>
+                    "<label><span>" +
+                    esc(x.asset + " · " + getAsset(x.asset).type) +
+                    '</span><select name="rem-' +
+                    x.num +
+                    '">' +
+                    holderOpts(x.holder === l.holder ? UNKNOWN : x.holder) +
+                    "</select></label>",
+                )
+                .join("") +
+              "</div>"
+            : "") +
+          '<button type="submit" class="primary">Confirm return</button> ' +
+          btn("Cancel", "cancelreturn") +
+          "</form>";
+      }
+    }
     return html;
   }
   function deskbook() {
@@ -311,15 +428,29 @@
         "Our microphone stays with me overnight. I’ll return it by 10 am Saturday.",
       ],
     ];
+    // `ats` holds when each entry happened (hours from Friday 00:00, same scale
+    // as clockAt); entries are shown newest first, ties keep their order.
+    const ats = [15.33, 15.5];
+    if (s.phase >= 1) ats.push(19.5);
     if (s.phase >= 1)
       entries.push([
         "Friday · 7:30 pm",
         "Kabir Sen · Film Society",
         "I brought the projector and speaker. Leela Das has our adapter. She’ll be at the counter at 9 am tomorrow.",
       ]);
-    for (const n of s.notes)
-      entries.push([shifts[n.phase].time, "Counter handover", n.text]);
-    for (const [t, author, body] of entries.slice().reverse())
+    for (const n of s.notes) {
+      ats.push(clockAt[n.phase]);
+      entries.push([
+        shifts[n.phase].time,
+        n.auto ? "Counter log" : "Counter handover",
+        n.text,
+      ]);
+    }
+    const order = entries
+      .map((_, i) => i)
+      .sort((a, b) => ats[a] - ats[b] || a - b)
+      .reverse();
+    for (const [t, author, body] of order.map((i) => entries[i]))
       html +=
         '<article class="record"><small>' +
         esc(t) +
@@ -347,6 +478,38 @@
     const advance = q('[data-action="advance"]');
     advance.hidden = !phase.next;
     advance.textContent = phase.next || "";
+    const still = s.loans.filter((l) => !l.back);
+    q("[data-stillout]").innerHTML =
+      "<b>Still out (" +
+      still.length +
+      ")</b>" +
+      (still.length
+        ? "<ul>" +
+          still
+            .map((l) => {
+              const u = getAsset(l.asset);
+              return (
+                "<li>" +
+                esc(
+                  l.asset +
+                    " " +
+                    u.type +
+                    " (" +
+                    u.model +
+                    ") · with " +
+                    l.holder +
+                    " · " +
+                    getReq(l.req).club +
+                    " · due " +
+                    l.due,
+                ) +
+                (isOverdue(l) ? " " + badge("Overdue") : "") +
+                "</li>"
+              );
+            })
+            .join("") +
+          "</ul>"
+        : " <span>Nothing is on loan.</span>");
     q("[data-nav]").innerHTML = pages
       .map(
         ([n, icon]) =>
@@ -390,6 +553,7 @@
       case "tab":
         s.tab = v;
         s.editing = false;
+        s.returning = null;
         break;
       case "close":
         s.selected = "";
@@ -409,14 +573,32 @@
       case "return": {
         const l = s.loans.find((l) => l.num === Number(v));
         if (!l || l.back) return;
-        l.back = true;
-        s.notice = l.asset + " returned to stock. Slip L-" + l.num + " closed.";
+        s.returning = l.num;
+        s.notice = "Confirm which unit was handed back.";
         break;
       }
+      case "cancelreturn":
+        s.returning = null;
+        break;
     }
     commit();
   });
   root.addEventListener("change", (e) => {
+    if (e.target.matches("[data-holder]")) {
+      const l = s.loans.find((x) => x.num === Number(e.target.dataset.holder));
+      if (
+        !l ||
+        l.back ||
+        !(people.includes(e.target.value) || e.target.value === UNKNOWN)
+      )
+        return;
+      if (l.holder !== e.target.value) {
+        l.holder = e.target.value;
+        log(l.asset + " now with " + l.holder + " (slip L-" + l.num + ").");
+        commit(l.asset + " now with " + l.holder + ".");
+      }
+      return;
+    }
     if (e.target.matches("[data-filter]")) {
       s.filter = e.target.value;
       commit();
@@ -431,6 +613,47 @@
       if (!text) return;
       s.notes.push({ phase: s.phase, text });
       commit("Handover note saved.");
+      return;
+    }
+    if (f.matches("[data-return]")) {
+      const l = s.loans.find((x) => x.num === Number(f.dataset.return));
+      const unit = getAsset(form.get("unit")),
+        by = form.get("by");
+      if (!l || l.back || !unit || !(people.includes(by) || by === UNKNOWN))
+        return;
+      const cur = getAsset(l.asset);
+      if (
+        unit.type !== cur.type ||
+        unit.repair ||
+        (unit.id !== l.asset && out(unit.id))
+      ) {
+        q("[data-status]").textContent =
+          "That unit can't close this slip. Check the label and try again.";
+        return;
+      }
+      let text = unit.id + " returned by " + by + " (slip L-" + l.num + " closed).";
+      if (unit.id !== l.asset) {
+        text =
+          "Slip L-" + l.num + " corrected: " + l.asset + " was recorded, but " +
+          unit.id + " came back with " + by + ". " + l.asset +
+          " now shows on shelf (bin " + cur.bin + "); please check it is there.";
+        l.asset = unit.id;
+      }
+      l.back = true;
+      l.holder = by;
+      s.returning = null;
+      log(text);
+      let notice = text;
+      for (const x of s.loans.filter((x) => x.req === l.req && !x.back)) {
+        const v = form.get("rem-" + x.num);
+        if (v === null || v === x.holder) continue;
+        if (!people.includes(v) && v !== UNKNOWN) continue;
+        x.holder = v;
+        const msg = x.asset + " now with " + v + " (slip L-" + x.num + ").";
+        log(msg);
+        notice += " " + msg;
+      }
+      commit(notice);
       return;
     }
     if (!f.matches("[data-issue]")) return;
@@ -456,8 +679,9 @@
       return;
     }
     const num = Math.max(...s.loans.map((l) => l.num)) + 1;
-    s.loans.push({ num, req, asset, who, due, back: false });
+    s.loans.push({ num, req, asset, who, holder: who, due, back: false });
     s.editing = false;
+    log(asset + " issued to " + who + " on slip L-" + num + ", due " + due + ".");
     commit("Issued " + asset + " to " + who + " on slip L-" + num + ".");
   });
   function restore(d) {
@@ -482,7 +706,8 @@
     s = {
       ...original(),
       ...d,
-      loans: d.loans.map((l) => ({ ...l })),
+      returning: null,
+      loans: d.loans.map((l) => ({ ...l, holder: l.holder || l.who })),
       notes: d.notes.map((n) => ({ ...n })),
     };
     paint();
